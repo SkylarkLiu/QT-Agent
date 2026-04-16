@@ -1,0 +1,99 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: qt-agent-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - etcd
+      - minio
+      - milvus
+
+  postgres:
+    image: postgres:16
+    container_name: qt-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: qt_agent
+      POSTGRES_USER: qt_agent
+      POSTGRES_PASSWORD: qt_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres16_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: qt-agent-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: qt-agent-etcd
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command:
+      - /usr/local/bin/etcd
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    ports:
+      - "2379:2379"
+    volumes:
+      - etcd_data:/etcd
+
+  minio:
+    image: minio/minio:RELEASE.2025-02-28T09-55-16Z
+    container_name: qt-agent-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  milvus:
+    image: milvusdb/milvus:v2.6.11
+    container_name: qt-agent-milvus
+    restart: unless-stopped
+    command:
+      - milvus
+      - run
+      - standalone
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      - etcd
+      - minio
+    volumes:
+      - milvus_data:/var/lib/milvus
+
+volumes:
+  postgres16_data:
+  redis_data:
+  etcd_data:
+  minio_data:
+  milvus_data:
