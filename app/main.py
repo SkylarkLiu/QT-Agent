@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.routes.health import router as health_router
 from app.api.v1.router import router as api_router
@@ -17,6 +18,14 @@ def create_app() -> FastAPI:
         debug=settings.app.debug,
         lifespan=lifespan,
     )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.app.allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    # 纯 ASGI 中间件：必须手动包装，不能用 add_middleware（会再次包裹 BaseHTTPMiddleware）
     app.add_middleware(RequestContextMiddleware)
     app.include_router(health_router)
     app.include_router(api_router, prefix=settings.app.api_prefix)

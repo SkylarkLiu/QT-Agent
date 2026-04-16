@@ -6,11 +6,11 @@ import logging
 import sys
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 
 trace_id_var = contextvars.ContextVar("trace_id", default="-")
@@ -77,8 +77,23 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-class RequestContextMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next) -> Response:
+class RequestContextMiddleware:
+    """纯 ASGI 中间件，替代 BaseHTTPMiddleware。
+
+    BaseHTTPMiddleware 会在独立线程中执行下游处理，请求断开时直接 cancel
+    协程，导致 asyncpg 连接池 terminate 抛出 CancelledError。
+    纯 ASGI 实现无此问题。
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive)
         trace_id = request.headers.get("X-Trace-Id") or str(uuid.uuid4())
         request_id = request.headers.get("X-Request-Id") or str(uuid.uuid4())
         session_id = request.headers.get("X-Session-Id", "-")
@@ -88,31 +103,41 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
         logger = get_logger("app.access")
         start = time.perf_counter()
+        status_code = 500  # default if response never sent
+
+        async def send_wrapper(message: dict) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message.get("status", 500)
+                # 注入 trace_id / request_id 到响应头
+                headers = list(message.get("headers", []))
+                headers.append((b"x-trace-id", trace_id.encode()))
+                headers.append((b"x-request-id", request_id.encode()))
+                message["headers"] = headers
+            await send(message)
 
         try:
-            response = await call_next(request)
+            await self.app(scope, receive, send_wrapper)
         except Exception:
-            error_logger = get_logger("app.error")
-            error_logger.exception(
+            get_logger("app.error").exception(
                 "request.failed",
-                extra={"log_type": "error", "method": request.method, "path": request.url.path},
+                extra={
+                    "log_type": "error",
+                    "method": request.method,
+                    "path": request.url.path,
+                },
+            )
+            raise
+        finally:
+            duration_ms = round((time.perf_counter() - start) * 1000, 2)
+            logger.info(
+                "request.completed",
+                extra={
+                    "log_type": "access",
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": status_code,
+                    "duration_ms": duration_ms,
+                },
             )
             clear_log_context()
-            raise
-
-        duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        response.headers["X-Trace-Id"] = trace_id
-        response.headers["X-Request-Id"] = request_id
-
-        logger.info(
-            "request.completed",
-            extra={
-                "log_type": "access",
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": response.status_code,
-                "duration_ms": duration_ms,
-            },
-        )
-        clear_log_context()
-        return response
