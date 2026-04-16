@@ -1,0 +1,66 @@
+:root {
+  --color-primary: #1f6feb;
+  --color-secondary: #4b5563;
+  --color-neutral-50: #ffffff;
+  --color-neutral-100: #f8f9fa;
+  --color-neutral-200: #f3f4f6;
+  --color-neutral-300: #d1d5db;
+  --color-neutral-500: #6b7280;
+  --color-neutral-700: #374151;
+  --color-neutral-900: #111827;
+  --color-success: #15803d;
+  --color-warning: #b45309;
+  --color-error: #b91c1c;
+
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 20px;
+  --text-xl: 24px;
+  --text-2xl: 32px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 64px;
+  --space-10: 64px;
+  --space-11: 64px;
+  --space-12: 64px;
+  --space-13: 64px;
+  --space-14: 64px;
+  --space-15: 64px;
+  --space-16: 64px;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+
+  --shadow-level-1: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-level-2: 0 4px 12px rgba(0, 0, 0, 0.1);
+
+  --border-default: 1px solid var(--color-neutral-300);
+  --color-primary-hover: #1859bb;
+
+  --size-control-height: 48px;
+  --size-switch-width: 48px;
+  --size-switch-height: 24px;
+  --size-switch-thumb: 16px;
+  --size-switch-thumb-offset: 28px;
+  --size-badge-height: 24px;
+  --size-tabs-trigger-height: 32px;
+  --size-textarea-min-height: 64px;
+  --size-chart-height: 64px;
+  --size-chart-bar-large: 64px;
+  --size-chart-bar-medium: 48px;
+  --size-chart-bar-small: 32px;
+  --size-chart-bar-tiny: 24px;
+  --size-icon-inline: 16px;
+  --size-icon-standalone: 20px;
+
+  --font-family-base:
+    "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}

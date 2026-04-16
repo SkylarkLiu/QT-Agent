@@ -1,0 +1,81 @@
+.field {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.fieldLabel {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--color-neutral-700);
+}
+
+.fieldHint {
+  font-size: var(--text-xs);
+  color: var(--color-neutral-500);
+}
+
+.control,
+.textarea,
+.select {
+  width: 100%;
+  min-height: var(--size-control-height);
+  padding: 0 var(--space-3);
+  border: var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-neutral-50);
+  color: var(--color-neutral-900);
+  font-size: var(--text-sm);
+}
+
+.textarea {
+  min-height: var(--size-textarea-min-height);
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
+  resize: vertical;
+}
+
+.control:focus,
+.textarea:focus,
+.select:focus {
+  outline: 2px solid var(--color-neutral-300);
+  outline-offset: 0;
+  border-color: var(--color-primary);
+}
+
+.switchRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: var(--size-control-height);
+}
+
+.switchRoot {
+  position: relative;
+  width: var(--size-switch-width);
+  height: var(--size-switch-height);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-neutral-300);
+  padding: 0;
+}
+
+.switchRoot[data-checked="true"] {
+  background: var(--color-primary);
+}
+
+.switchThumb {
+  position: absolute;
+  top: var(--space-1);
+  left: var(--space-1);
+  width: var(--size-switch-thumb);
+  height: var(--size-switch-thumb);
+  border-radius: var(--radius-sm);
+  background: var(--color-neutral-50);
+  transition: left 120ms ease;
+}
+
+.switchRoot[data-checked="true"] .switchThumb {
+  left: var(--size-switch-thumb-offset);
+}

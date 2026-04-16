@@ -1,0 +1,29 @@
+.tabsRoot {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.tabsList {
+  display: inline-flex;
+  gap: var(--space-2);
+  padding: var(--space-1);
+  background: var(--color-neutral-200);
+  border-radius: var(--radius-md);
+}
+
+.tabsTrigger {
+  min-height: var(--size-tabs-trigger-height);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-neutral-700);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.tabsTrigger[data-active="true"] {
+  background: var(--color-neutral-50);
+  color: var(--color-neutral-900);
+  box-shadow: var(--shadow-level-1);
+}

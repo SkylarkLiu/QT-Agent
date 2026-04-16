@@ -1,0 +1,39 @@
+.card {
+  background: var(--color-neutral-50);
+  border-radius: var(--radius-md);
+}
+
+.bordered {
+  border: var(--border-default);
+}
+
+.elevated {
+  box-shadow: var(--shadow-level-1);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-bottom: var(--border-default);
+}
+
+.cardBody {
+  padding: var(--space-4);
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--color-neutral-900);
+}
+
+.cardDescription {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  color: var(--color-neutral-500);
+}
