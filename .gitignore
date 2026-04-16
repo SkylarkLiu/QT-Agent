@@ -50,3 +50,7 @@ milvus_data/
 *.log
 *.tmp
 tasks.json
+
+# Node.js
+node_modules/
+.npm-cache/
