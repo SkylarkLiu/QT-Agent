@@ -108,13 +108,16 @@ class PostgresCheckpointer(BaseCheckpointSaver):
             },
         )
 
-        return {
-            "configurable": {
-                "thread_id": thread_id,
-                "checkpoint_ns": checkpoint_ns,
-                "checkpoint_id": checkpoint_id,
-            }
-        }
+        return cast(
+            RunnableConfig,
+            {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
+                    "checkpoint_id": checkpoint_id,
+                }
+            },
+        )
 
     async def aput_writes(
         self,
@@ -216,24 +219,30 @@ class PostgresCheckpointer(BaseCheckpointSaver):
                 except (json.JSONDecodeError, KeyError):
                     pass
 
-            parent_config = None
+            parent_config: RunnableConfig | None = None
             if result.parent_checkpoint_id:
-                parent_config = {
-                    "configurable": {
-                        "thread_id": thread_id,
-                        "checkpoint_ns": checkpoint_ns,
-                        "checkpoint_id": result.parent_checkpoint_id,
-                    }
-                }
+                parent_config = cast(
+                    RunnableConfig,
+                    {
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "checkpoint_ns": checkpoint_ns,
+                            "checkpoint_id": result.parent_checkpoint_id,
+                        }
+                    },
+                )
 
             return CheckpointTuple(
-                config={
-                    "configurable": {
-                        "thread_id": thread_id,
-                        "checkpoint_ns": checkpoint_ns,
-                        "checkpoint_id": result.checkpoint_id,
-                    }
-                },
+                config=cast(
+                    RunnableConfig,
+                    {
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "checkpoint_ns": checkpoint_ns,
+                            "checkpoint_id": result.checkpoint_id,
+                        }
+                    },
+                ),
                 checkpoint=checkpoint,
                 metadata=cast(LGCheckpointMetadata, lg_metadata),
                 parent_config=parent_config,
@@ -291,24 +300,30 @@ class PostgresCheckpointer(BaseCheckpointSaver):
                     except (json.JSONDecodeError, KeyError):
                         pass
 
-                parent_config = None
+                parent_config: RunnableConfig | None = None
                 if row.parent_checkpoint_id:
-                    parent_config = {
-                        "configurable": {
-                            "thread_id": thread_id,
-                            "checkpoint_ns": checkpoint_ns,
-                            "checkpoint_id": row.parent_checkpoint_id,
-                        }
-                    }
+                    parent_config = cast(
+                        RunnableConfig,
+                        {
+                            "configurable": {
+                                "thread_id": thread_id,
+                                "checkpoint_ns": checkpoint_ns,
+                                "checkpoint_id": row.parent_checkpoint_id,
+                            }
+                        },
+                    )
 
                 yield CheckpointTuple(
-                    config={
-                        "configurable": {
-                            "thread_id": thread_id,
-                            "checkpoint_ns": checkpoint_ns,
-                            "checkpoint_id": row.checkpoint_id,
-                        }
-                    },
+                    config=cast(
+                        RunnableConfig,
+                        {
+                            "configurable": {
+                                "thread_id": thread_id,
+                                "checkpoint_ns": checkpoint_ns,
+                                "checkpoint_id": row.checkpoint_id,
+                            }
+                        },
+                    ),
                     checkpoint=checkpoint,
                     metadata=cast(LGCheckpointMetadata, lg_metadata),
                     parent_config=parent_config,
