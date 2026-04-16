@@ -43,7 +43,10 @@ class GLMProvider(BaseLLMProvider):
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._resolve_model(model),
-            "messages": [message.model_dump(exclude_none=True) for message in messages],
+            "messages": [
+                (message.model_dump(exclude_none=True) if hasattr(message, "model_dump") else message)
+                for message in messages
+            ],
             "stream": stream,
         }
         if temperature is not None:
