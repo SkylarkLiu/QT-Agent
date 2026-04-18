@@ -6,15 +6,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_sessionmaker
 from app.graph.nodes import (
     check_window_cache,
+    execute_mcp_tool,
     generate_response,
     init_request,
     load_session_context_factory,
     persist_state_factory,
     post_process,
+    route_after_skill_router,
     route_by_type,
     supervisor_route,
 )
 from app.graph.rag_builder import build_rag_subgraph
+from app.graph.skill_builder import build_skill_router_subgraph
 from app.graph.state import GraphState
 from app.graph.web_builder import build_web_search_subgraph
 from app.memory.checkpointer import PostgresCheckpointer
@@ -54,6 +57,7 @@ def build_main_graph(session: AsyncSession | None = None):
 
     # 构建子图并编译
     rag_subgraph = build_rag_subgraph().compile()
+    skill_router_subgraph = build_skill_router_subgraph().compile()
     web_search_subgraph = build_web_search_subgraph().compile()
 
     builder = StateGraph(GraphState)
@@ -69,6 +73,9 @@ def build_main_graph(session: AsyncSession | None = None):
     builder.add_node("check_window_cache", check_window_cache)
     builder.add_node("supervisor_route", supervisor_route)
     builder.add_node("smalltalk", generate_response)
+    builder.add_node("tool", generate_response)
+    builder.add_node("mcp_call", execute_mcp_tool)
+    builder.add_node("skill_router", skill_router_subgraph)
     builder.add_node("knowledge_qa", rag_subgraph)
     builder.add_node("web_search", web_search_subgraph)
     builder.add_node("post_process", post_process)
@@ -88,12 +95,25 @@ def build_main_graph(session: AsyncSession | None = None):
         route_by_type,
         {
             "smalltalk": "smalltalk",
+            "tool": "tool",
+            "mcp_call": "mcp_call",
+            "skill": "skill_router",
             "knowledge_qa": "knowledge_qa",
             "web_search": "web_search",
             "post_process": "post_process",
         },
     )
     builder.add_edge("smalltalk", "post_process")
+    builder.add_edge("tool", "post_process")
+    builder.add_edge("mcp_call", "post_process")
+    builder.add_conditional_edges(
+        "skill_router",
+        route_after_skill_router,
+        {
+            "skill_router": "skill_router",
+            "post_process": "post_process",
+        },
+    )
 
     # knowledge_qa 完成后检查是否需要降级到 web_search
     builder.add_conditional_edges(

@@ -7,7 +7,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import GraphCheckpoint, Message, Session, User
+from app.db.models import AuditLog, GraphCheckpoint, Message, Session, User
 
 
 class UserRepository:
@@ -20,6 +20,31 @@ class UserRepository:
     async def get_by_username(self, username: str) -> User | None:
         stmt = select(User).where(User.username == username)
         return await self.session.scalar(stmt)
+
+    async def list_users(self, *, limit: int = 50, offset: int = 0) -> Sequence[User]:
+        stmt: Select[tuple[User]] = select(User).order_by(User.created_at.desc()).offset(offset).limit(limit)
+        result = await self.session.scalars(stmt)
+        return result.all()
+
+    async def create(
+        self,
+        *,
+        username: str,
+        user_id: str | None = None,
+        display_name: str | None = None,
+        email: str | None = None,
+        is_active: bool = True,
+        metadata: dict | None = None,
+    ) -> User:
+        user = User(id=user_id) if user_id else User()
+        user.username = username
+        user.display_name = display_name
+        user.email = email
+        user.is_active = is_active
+        user.metadata_ = metadata or {}
+        self.session.add(user)
+        await self.session.flush()
+        return user
 
     async def get_or_create(self, *, username: str, user_id: str | None = None) -> User:
         user = await self.get_by_id(user_id) if user_id else None
@@ -135,3 +160,51 @@ class GraphCheckpointRepository:
         self.session.add(checkpoint)
         await self.session.flush()
         return checkpoint
+
+    async def list_by_session(self, session_id: str, *, limit: int = 20) -> Sequence[GraphCheckpoint]:
+        stmt: Select[tuple[GraphCheckpoint]] = (
+            select(GraphCheckpoint)
+            .where(GraphCheckpoint.session_id == session_id)
+            .order_by(GraphCheckpoint.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.scalars(stmt)
+        return result.all()
+
+    async def get_latest_by_session(self, session_id: str) -> GraphCheckpoint | None:
+        stmt: Select[tuple[GraphCheckpoint]] = (
+            select(GraphCheckpoint)
+            .where(GraphCheckpoint.session_id == session_id)
+            .order_by(GraphCheckpoint.created_at.desc())
+            .limit(1)
+        )
+        return await self.session.scalar(stmt)
+
+
+class AuditLogRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(
+        self,
+        *,
+        user_id: str | None,
+        action: str,
+        resource_type: str,
+        resource_id: str | None,
+        trace_id: str | None,
+        payload: dict,
+        created_at: datetime,
+    ) -> AuditLog:
+        entry = AuditLog(
+            user_id=user_id,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            trace_id=trace_id,
+            payload=payload,
+            created_at=created_at,
+        )
+        self.session.add(entry)
+        await self.session.flush()
+        return entry

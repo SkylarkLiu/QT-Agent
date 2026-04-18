@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
@@ -17,7 +17,9 @@ from app.schemas.ingestion import (
     KnowledgeBaseResponse,
     UploadDocumentResponse,
 )
+from app.schemas.knowledge import KnowledgeSearchDebugRequest, KnowledgeSearchDebugResponse
 from app.services.ingestion import IngestionService
+from app.services.knowledge import KnowledgeService
 
 router = APIRouter()
 
@@ -81,8 +83,11 @@ async def upload_document(
 )
 async def get_document_status(
     doc_id: str,
+    user_id: str | None = Query(None),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
+    knowledge_service = KnowledgeService(session)
+    await knowledge_service.ensure_document_access(doc_id, user_id=user_id)
     service = IngestionService(session)
     return await service.get_document_status(doc_id)
 
@@ -94,10 +99,40 @@ async def get_document_status(
 )
 async def list_documents(
     kb_id: str,
+    user_id: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     service = IngestionService(session)
+    await service.knowledge_service.ensure_kb_access(kb_id, user_id=user_id)
     items, total = await service.list_documents(kb_id, limit=limit, offset=offset)
     return {"items": items, "total": total}
+
+
+@router.get(
+    "/documents/{doc_id}",
+    response_model=DocumentResponse,
+    summary="获取文档详情",
+)
+async def get_document_detail(
+    doc_id: str,
+    user_id: str | None = Query(None),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = KnowledgeService(session)
+    return await service.get_document_detail(doc_id, user_id=user_id)
+
+
+@router.post(
+    "/knowledge-bases/{kb_id}/search-debug",
+    response_model=KnowledgeSearchDebugResponse,
+    summary="知识检索调试",
+)
+async def knowledge_search_debug(
+    kb_id: str,
+    body: KnowledgeSearchDebugRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> KnowledgeSearchDebugResponse:
+    service = KnowledgeService(session)
+    return await service.search_debug(kb_id, body)

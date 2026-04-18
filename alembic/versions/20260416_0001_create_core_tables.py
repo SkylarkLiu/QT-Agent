@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
 
@@ -12,6 +13,19 @@ depends_on = None
 
 
 def upgrade() -> None:
+    existing_tables = set(inspect(op.get_bind()).get_table_names())
+    required_tables = {
+        "users",
+        "sessions",
+        "messages",
+        "knowledge_bases",
+        "documents",
+        "audit_logs",
+        "graph_checkpoints",
+    }
+    if required_tables.issubset(existing_tables):
+        return
+
     op.create_table(
         "users",
         sa.Column("username", sa.String(length=128), nullable=False),
@@ -132,6 +146,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    existing_tables = set(inspect(op.get_bind()).get_table_names())
+    if "graph_checkpoints" not in existing_tables:
+        return
+
     op.drop_index(op.f("ix_graph_checkpoints_session_id"), table_name="graph_checkpoints")
     op.drop_index(op.f("ix_graph_checkpoints_checkpoint_id"), table_name="graph_checkpoints")
     op.drop_table("graph_checkpoints")

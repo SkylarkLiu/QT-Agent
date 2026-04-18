@@ -165,6 +165,15 @@ class SSEConfig(BaseModel):
     retry_milliseconds: int = 3000
 
 
+class RuntimeConfig(BaseModel):
+    embedding_max_concurrency: int = 2
+    embedding_timeout_seconds: int = 60
+    object_storage_timeout_seconds: int = 30
+    background_task_timeout_seconds: int = 1800
+    redis_required_on_startup: bool = False
+    minio_required_on_startup: bool = False
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -187,6 +196,7 @@ class Settings(BaseSettings):
     ingestion: IngestionConfig = IngestionConfig()
     web_search: WebSearchConfig = WebSearchConfig()
     memory: MemoryConfig = MemoryConfig()
+    runtime: RuntimeConfig = RuntimeConfig()
 
 
 @lru_cache(maxsize=1)

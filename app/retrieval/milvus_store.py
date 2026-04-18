@@ -20,7 +20,17 @@ def _build_filter(metadata_filter: dict[str, Any] | None) -> str | None:
 
     clauses: list[str] = []
     for key, value in metadata_filter.items():
-        if isinstance(value, str):
+        if isinstance(value, (list, tuple, set)):
+            items: list[str] = []
+            for current in value:
+                if isinstance(current, str):
+                    items.append(f'"{current}"')
+                elif isinstance(current, bool):
+                    items.append(str(current).lower())
+                else:
+                    items.append(str(current))
+            clauses.append(f'metadata["{key}"] in [{", ".join(items)}]')
+        elif isinstance(value, str):
             clauses.append(f'metadata["{key}"] == "{value}"')
         elif isinstance(value, bool):
             clauses.append(f'metadata["{key}"] == {str(value).lower()}')

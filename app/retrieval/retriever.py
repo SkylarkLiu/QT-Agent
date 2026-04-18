@@ -7,6 +7,7 @@ from typing import Any
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.providers.factories import EmbeddingProviderFactory
+from app.retrieval.access import RetrievalAccessScope
 from app.retrieval.base import VectorDocument
 from app.retrieval.milvus_store import get_milvus_store
 
@@ -40,6 +41,7 @@ class Retriever:
         top_k: int | None = None,
         user_id: str | None = None,
         kb_ids: list[str] | None = None,
+        access_scope: RetrievalAccessScope | None = None,
         extra_filter: dict[str, Any] | None = None,
     ) -> list[VectorDocument]:
         """检索与 query 最相关的文档片段。
@@ -67,7 +69,12 @@ class Retriever:
         )
 
         # 2. 构建权限 filter
-        metadata_filter = self._build_filter(user_id=user_id, kb_ids=kb_ids, extra=extra_filter)
+        metadata_filter = self._build_filter(
+            user_id=user_id,
+            kb_ids=kb_ids,
+            access_scope=access_scope,
+            extra=extra_filter,
+        )
 
         # 3. 向量检索
         docs = await self.vector_store.similarity_search(
@@ -90,16 +97,14 @@ class Retriever:
         *,
         user_id: str | None = None,
         kb_ids: list[str] | None = None,
+        access_scope: RetrievalAccessScope | None = None,
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """组合 metadata 过滤条件。"""
-        filters: dict[str, Any] = {}
-        if user_id:
-            filters["owner_user_id"] = user_id
-        if kb_ids:
-            filters["kb_id"] = kb_ids  # Milvus JSON field 支持 list contains
-        if extra:
-            filters.update(extra)
+        scope = access_scope or RetrievalAccessScope(user_id=user_id, accessible_kb_ids=kb_ids or [])
+        filters = scope.to_metadata_filter(extra=extra)
+        if kb_ids and "kb_id" not in filters:
+            filters["kb_id"] = kb_ids
         return filters
 
 

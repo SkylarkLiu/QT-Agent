@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
 
 from app.core.config import get_settings
 from app.providers.base import BaseEmbeddingProvider
 from app.schemas.provider import EmbeddingResult
+from app.utils.runtime import get_concurrency_controller, run_with_timeout
 
 
 class DefaultEmbeddingProvider(BaseEmbeddingProvider):
@@ -35,7 +37,21 @@ class DefaultEmbeddingProvider(BaseEmbeddingProvider):
         return [value / norm for value in vector]
 
     async def embed_documents(self, texts: list[str], *, model: str | None = None) -> EmbeddingResult:
-        embeddings = [self._embed_text(text) for text in texts]
+        settings = get_settings()
+        controller = get_concurrency_controller()
+
+        async def _compute() -> list[list[float]]:
+            return await asyncio.to_thread(lambda: [self._embed_text(text) for text in texts])
+
+        embeddings = await controller.run(
+            "embedding",
+            settings.runtime.embedding_max_concurrency,
+            lambda: run_with_timeout(
+                _compute,
+                timeout_seconds=settings.runtime.embedding_timeout_seconds,
+                timeout_message="Embedding batch timed out.",
+            ),
+        )
         return EmbeddingResult(
             provider=self.provider_name,
             model=self._resolve_model(model),

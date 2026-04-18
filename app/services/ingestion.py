@@ -9,10 +9,15 @@ from typing import Any
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cache.redis_client import distributed_lock
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.ingestion.pipeline import IngestionPipeline
+from app.repositories.chat import AuditLogRepository
 from app.repositories.knowledge import DocumentRepository, KnowledgeBaseRepository
+from app.services.audit import AuditService
+from app.services.background_tasks import get_background_task_dispatcher
+from app.services.knowledge import KnowledgeService
 from app.services.object_storage import get_object_storage
 
 logger = get_logger("app.services.ingestion")
@@ -77,7 +82,9 @@ class IngestionService:
         self.session = session
         self.kb_repo = KnowledgeBaseRepository(session)
         self.doc_repo = DocumentRepository(session)
+        self.knowledge_service = KnowledgeService(session)
         self.settings = get_settings()
+        self.audit_service = AuditService(AuditLogRepository(session))
 
     def _validate_file(self, filename: str, file_size: int) -> str:
         """校验文件扩展名和大小，返回 source_type。"""
@@ -115,73 +122,94 @@ class IngestionService:
         source_type = self._validate_file(filename, file_size)
 
         # 2. 校验知识库存在
-        kb = await self.kb_repo.get(knowledge_base_id)
-        if kb is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Knowledge base '{knowledge_base_id}' not found.",
+        kb = await self.knowledge_service.ensure_kb_access(knowledge_base_id, user_id=user_id)
+
+        lock_name = f"ingestion:{knowledge_base_id}:{filename}:{file_size}"
+        async with distributed_lock(lock_name, timeout=60) as acquired:
+            if not acquired:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A similar ingestion task is already in progress.",
+                )
+
+            # 3. 上传 MinIO
+            object_name = f"documents/{knowledge_base_id}/{uuid.uuid4()}/{filename}"
+            storage = get_object_storage()
+            try:
+                stored = await storage.upload_bytes(
+                    object_name,
+                    file_bytes,
+                    content_type=_content_type_for(filename),
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Object storage is unavailable. Upload is temporarily disabled.",
+                ) from exc
+            storage_path = f"{stored.bucket}/{stored.object_name}"
+
+            logger.info(
+                "ingestion.upload_done",
+                extra={
+                    "file_name": filename,
+                    "file_size": file_size,
+                    "storage_path": storage_path,
+                },
             )
 
-        # 3. 上传 MinIO
-        object_name = f"documents/{knowledge_base_id}/{uuid.uuid4()}/{filename}"
-        storage = get_object_storage()
-        stored = await storage.upload_bytes(
-            object_name,
-            file_bytes,
-            content_type=_content_type_for(filename),
-        )
-        storage_path = f"{stored.bucket}/{stored.object_name}"
-
-        logger.info(
-            "ingestion.upload_done",
-            extra={
-                "filename": filename,
-                "size": file_size,
-                "storage_path": storage_path,
-            },
-        )
-
-        # 4. 创建 Document 记录
-        doc = await self.doc_repo.create(
-            knowledge_base_id=knowledge_base_id,
-            filename=filename,
-            storage_path=storage_path,
-            source_type=source_type,
-            file_size=file_size,
-        )
-        logger.info(
-            "ingestion.document_created",
-            extra={"doc_id": doc.id, "status": "pending"},
-        )
-
-        # 5. 执行入库管道（在后台异步执行）
-        #    先更新状态为 processing
-        await self.doc_repo.update_status(doc.id, parser_status="processing")
-        await self.session.commit()
-
-        # 6. 异步执行 pipeline
-        owner_user_id = user_id or kb.user_id or ""
-
-        # 使用 create_task 实现真正的异步后台执行
-        import asyncio
-        asyncio.create_task(
-            self._run_pipeline(
-                doc_id=doc.id,
-                kb_id=knowledge_base_id,
-                owner_user_id=owner_user_id,
+            # 4. 创建 Document 记录
+            doc = await self.doc_repo.create(
+                knowledge_base_id=knowledge_base_id,
                 filename=filename,
-                file_bytes=file_bytes,
+                storage_path=storage_path,
                 source_type=source_type,
+                file_size=file_size,
             )
-        )
+            logger.info(
+                "ingestion.document_created",
+                extra={"doc_id": doc.id, "status": "pending"},
+            )
 
-        return {
-            "document_id": doc.id,
-            "filename": filename,
-            "knowledge_base_id": knowledge_base_id,
-            "parser_status": "processing",
-            "message": "File uploaded. Ingestion pipeline started in background.",
-        }
+            # 5. 执行入库管道（在后台异步执行）
+            #    先更新状态为 processing
+            await self.doc_repo.update_status(doc.id, parser_status="processing")
+            await self.session.commit()
+
+            # 6. 异步执行 pipeline
+            owner_user_id = user_id or kb.user_id or ""
+
+            dispatcher = get_background_task_dispatcher()
+            dispatcher.dispatch(
+                f"ingestion:{doc.id}",
+                lambda: self._run_pipeline(
+                    doc_id=doc.id,
+                    kb_id=knowledge_base_id,
+                    owner_user_id=owner_user_id,
+                    filename=filename,
+                    file_bytes=file_bytes,
+                    source_type=source_type,
+                ),
+            )
+            await self.audit_service.record(
+                action="document.uploaded",
+                resource_type="document",
+                resource_id=doc.id,
+                user_id=user_id,
+                payload={
+                    "knowledge_base_id": knowledge_base_id,
+                    "filename": filename,
+                    "storage_path": storage_path,
+                },
+            )
+            await self.session.commit()
+
+            return {
+                "document_id": doc.id,
+                "filename": filename,
+                "knowledge_base_id": knowledge_base_id,
+                "parser_status": "processing",
+                "message": "File uploaded. Ingestion pipeline started in background.",
+            }
 
     async def _run_pipeline(
         self,
@@ -226,6 +254,18 @@ class IngestionService:
                         "chunks": result.get("chunk_count", 0),
                     },
                 )
+                await AuditService(AuditLogRepository(session)).record(
+                    action="document.ingestion.completed",
+                    resource_type="document",
+                    resource_id=doc_id,
+                    user_id=owner_user_id or None,
+                    payload={
+                        "knowledge_base_id": kb_id,
+                        "parser_status": result["parser_status"],
+                        "chunk_count": result.get("chunk_count", 0),
+                    },
+                )
+                await session.commit()
 
         except Exception as exc:
             logger.exception(
@@ -308,6 +348,14 @@ class IngestionService:
             user_id=user_id,
             description=description,
             visibility=visibility,
+        )
+        await self.session.commit()
+        await self.audit_service.record(
+            action="knowledge_base.created",
+            resource_type="knowledge_base",
+            resource_id=kb.id,
+            user_id=user_id,
+            payload={"name": name, "visibility": visibility},
         )
         await self.session.commit()
         return {

@@ -16,9 +16,11 @@ class LLMProviderFactory:
     }
 
     @classmethod
-    def create(cls, provider_name: str | None = None) -> BaseLLMProvider:
+    def create(cls, provider_name: str | None = None, *, model: str | None = None) -> BaseLLMProvider:
         settings = get_settings()
         resolved = (provider_name or settings.llm.provider).lower()
+        if model and model.lower().startswith("mock"):
+            return MockLLMProvider()
         if resolved == "glm" and not settings.llm.api_key and settings.app.env != "production":
             return MockLLMProvider()
         if resolved not in cls._providers:

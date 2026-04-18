@@ -1,6 +1,6 @@
 """Retrieval package."""
 
+from app.retrieval.access import RetrievalAccessScope
 from app.retrieval.base import BaseVectorStore, VectorDocument
-from app.retrieval.retriever import Retriever, get_retriever
 
-__all__ = ["BaseVectorStore", "Retriever", "VectorDocument", "get_retriever"]
+__all__ = ["BaseVectorStore", "RetrievalAccessScope", "VectorDocument"]

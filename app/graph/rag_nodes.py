@@ -15,9 +15,13 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.graph.observability import log_graph_event
 from app.providers.factories import EmbeddingProviderFactory, LLMProviderFactory
+from app.retrieval.access import RetrievalAccessScope
 from app.retrieval.base import VectorDocument
 from app.retrieval.retriever import get_retriever
+from app.schemas.provider import LLMMessage, MessageDict
+from app.graph.state import GraphState
 
 logger = get_logger("app.graph.rag")
 
@@ -61,16 +65,16 @@ def _build_citation_context(docs: list[VectorDocument]) -> str:
 def _build_rag_messages(
     query: str,
     docs: list[VectorDocument],
-    history: list[dict[str, str]],
-) -> list[dict[str, str]]:
+    history: list[MessageDict],
+) -> list[LLMMessage]:
     """构建 RAG 问答的完整 messages 列表。"""
     citation_context = _build_citation_context(docs)
     rag_user_content = _CITATION_TEMPLATE.format(citations=citation_context) + f"\n\n用户问题：{query}"
 
-    messages: list[dict[str, str]] = [{"role": "system", "content": _RAG_SYSTEM_PROMPT}]
+    messages: list[LLMMessage] = [LLMMessage(role="system", content=_RAG_SYSTEM_PROMPT)]
     for msg in history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append({"role": "user", "content": rag_user_content})
+        messages.append(LLMMessage(role=msg["role"], content=msg["content"]))
+    messages.append(LLMMessage(role="user", content=rag_user_content))
     return messages
 
 
@@ -79,7 +83,7 @@ def _build_rag_messages(
 # ---------------------------------------------------------------------------
 
 
-async def rag_prepare(state: dict) -> dict:
+async def rag_prepare(state: GraphState) -> dict:
     """RAG 子图入口：准备检索参数。"""
     settings = get_settings()
     return {
@@ -92,18 +96,25 @@ async def rag_prepare(state: dict) -> dict:
     }
 
 
-async def recall_documents(state: dict) -> dict:
+async def recall_documents(state: GraphState) -> dict:
     """向量召回：对 query 做 embedding 后检索 Milvus。"""
     settings = get_settings()
     start = time.perf_counter()
 
-    query = state["normalized_query"] if state.get("recall_count", 0) == 0 else state.get("rewritten_query", state["normalized_query"])
+    recall_count = state.get("recall_count", 0)
+    normalized_query = state.get("normalized_query")
+    if not normalized_query:
+      raise ValueError("normalized_query is required")
+    
+    rewritten_query = state.get("rewritten_query")
+
+    query = normalized_query if recall_count == 0 else (rewritten_query or normalized_query)
     retriever = get_retriever()
 
     docs = await retriever.retrieve(
         query,
         top_k=state.get("top_k", 5),
-        user_id=state.get("user_id"),
+        access_scope=RetrievalAccessScope(user_id=state.get("user_id")),
     )
 
     elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
@@ -118,6 +129,7 @@ async def recall_documents(state: dict) -> dict:
             "latency_ms": elapsed_ms,
         },
     )
+    log_graph_event("recall_documents", event="retrieved", latency_ms=elapsed_ms, returned_docs=len(docs), top_score=top_score)
 
     # 将 VectorDocument 转为可序列化的 dict
     doc_dicts = [
@@ -136,7 +148,7 @@ async def recall_documents(state: dict) -> dict:
     }
 
 
-async def rerank_documents(state: dict) -> dict:
+async def rerank_documents(state: GraphState) -> dict:
     """重排序：基于 relevance score 过滤低分文档，保留 top-k。
 
     当前实现使用向量相似度 score 作为排序依据（cosine similarity）。
@@ -158,10 +170,11 @@ async def rerank_documents(state: dict) -> dict:
             "rerank_top_k": rerank_top_k,
         },
     )
+    log_graph_event("rerank_documents", event="reranked", input_count=len(docs), output_count=len(reranked))
     return {"retrieved_docs": reranked}
 
 
-async def evaluate_relevance(state: dict) -> dict:
+async def evaluate_relevance(state: GraphState) -> dict:
     """评估检索结果的相关性。
 
     判断逻辑：
@@ -184,6 +197,7 @@ async def evaluate_relevance(state: dict) -> dict:
             "max_recall_count": max_recall,
         },
     )
+    log_graph_event("evaluate_relevance", event="evaluated", score=score, threshold=threshold, recall_count=recall_count)
 
     if score >= threshold:
         return {
@@ -208,16 +222,17 @@ async def evaluate_relevance(state: dict) -> dict:
     }
 
 
-async def reform_query(state: dict) -> dict:
+async def reform_query(state: GraphState) -> dict:
     """改写 query：让 LLM 优化用户问题以提高检索命中率。"""
     settings = get_settings()
     if not settings.rag.query_rewrite_enabled:
         return {"recall_count": state.get("recall_count", 0) + 1}
 
-    original_query = state["normalized_query"]
+    original_query = state.get("normalized_query", "")
     docs_summary = ""
     if state.get("retrieved_docs"):
-        top_content = state["retrieved_docs"][0].get("content", "")[:200] if state["retrieved_docs"] else ""
+        retrieved_docs = state.get("retrieved_docs", [])
+        top_content = retrieved_docs[0].get("content", "")[:200] if retrieved_docs else ""
         docs_summary = f"\n已有检索结果摘要（相关度偏低）：{top_content}"
 
     rewrite_prompt = f"""\
@@ -228,12 +243,12 @@ async def reform_query(state: dict) -> dict:
 
 请直接输出改写后的查询，不要输出其他内容。"""
 
-    provider = LLMProviderFactory.create()
+    provider = LLMProviderFactory.create(model=state.get("model"))
     result = await provider.chat(
-        [
-            {"role": "system", "content": "你是一个查询优化助手，只输出改写后的查询文本。"},
-            {"role": "user", "content": rewrite_prompt},
-        ],
+    [
+        LLMMessage(role="system", content="你是一个查询优化助手，只输出改写后的查询文本。"),
+        LLMMessage(role="user", content=rewrite_prompt),
+    ],
         temperature=0.0,
         max_tokens=128,
     )
@@ -247,6 +262,7 @@ async def reform_query(state: dict) -> dict:
             "recall_count": state.get("recall_count", 0),
         },
     )
+    log_graph_event("reform_query", event="rewritten", recall_count=state.get("recall_count", 0), original_query=original_query[:80], rewritten_query=rewritten[:80])
 
     return {
         "rewritten_query": rewritten,
@@ -254,7 +270,7 @@ async def reform_query(state: dict) -> dict:
     }
 
 
-async def answer_by_rag(state: dict) -> dict:
+async def answer_by_rag(state: GraphState) -> dict:
     """基于检索结果生成回答：将 citation context 喂给 LLM。"""
     settings = get_settings()
     start = time.perf_counter()
@@ -267,15 +283,15 @@ async def answer_by_rag(state: dict) -> dict:
     for msg in state.get("history_messages", []):
         history.append({"role": msg.role, "content": msg.content})
 
-    messages = _build_rag_messages(state["user_message"], docs, history)
-    provider = LLMProviderFactory.create()
+    messages = _build_rag_messages(state.get("user_message", ""), docs, history)
+    provider = LLMProviderFactory.create(model=state.get("model"))
 
     if state.get("stream"):
         aggregated = ""
         stream_chunks: list[dict] = []
         finish_reason: str | None = None
         async for chunk in provider.stream_chat(
-            [__import__("app.schemas.provider", fromlist=["LLMMessage"]).LLMMessage(**m) for m in messages],
+            messages,
             model=state.get("model"),
         ):
             if chunk.delta:
@@ -293,6 +309,7 @@ async def answer_by_rag(state: dict) -> dict:
                 "chunk_count": len(stream_chunks),
             },
         )
+        log_graph_event("answer_by_rag", event="answered", latency_ms=elapsed_ms, provider=provider.provider_name, route_type="knowledge_qa")
         return {
             "response_text": aggregated,
             "provider_name": provider.provider_name,
@@ -300,10 +317,8 @@ async def answer_by_rag(state: dict) -> dict:
             "stream_chunks": stream_chunks,
         }
 
-    from app.schemas.provider import LLMMessage
 
-    llm_messages = [LLMMessage(**m) for m in messages]
-    result = await provider.chat(llm_messages, model=state.get("model"))
+    result = await provider.chat(messages, model=state.get("model"))
     elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
 
     logger.info(
@@ -315,6 +330,7 @@ async def answer_by_rag(state: dict) -> dict:
             "model": result.model,
         },
     )
+    log_graph_event("answer_by_rag", event="answered", latency_ms=elapsed_ms, provider=result.provider, route_type="knowledge_qa")
     return {
         "response_text": result.content,
         "provider_name": result.provider,
@@ -324,7 +340,7 @@ async def answer_by_rag(state: dict) -> dict:
     }
 
 
-async def fallback_to_websearch(state: dict) -> dict:
+async def fallback_to_websearch(state: GraphState) -> dict:
     """RAG 降级标记：设置 need_web_fallback 标志，由主图路由到 web_search。"""
     logger.info(
         "rag.fallback_to_websearch",
@@ -334,6 +350,7 @@ async def fallback_to_websearch(state: dict) -> dict:
             "user_query": state.get("normalized_query", "")[:50],
         },
     )
+    log_graph_event("fallback_to_websearch", event="fallback", route_type="web_search", recall_count=state.get("recall_count", 0))
     return {
         "need_web_fallback": True,
         "route_type": "web_search",

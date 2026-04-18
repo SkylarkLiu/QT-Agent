@@ -9,7 +9,8 @@ from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.graph import build_main_graph
-from app.repositories.chat import GraphCheckpointRepository, MessageRepository, SessionRepository, UserRepository
+from app.repositories.chat import AuditLogRepository, GraphCheckpointRepository, MessageRepository, SessionRepository, UserRepository
+from app.services.audit import AuditService
 from app.schemas.chat import (
     ChatDebugResponse,
     ChatHistoryResponse,
@@ -33,6 +34,7 @@ class ChatService:
         self.session_repo = SessionRepository(session)
         self.message_repo = MessageRepository(session)
         self.checkpoint_repo = GraphCheckpointRepository(session)
+        self.audit_service = AuditService(AuditLogRepository(session))
 
     def _normalize_user_id(self, payload: ChatRequest) -> str:
         source = payload.user_id or payload.username
@@ -72,6 +74,19 @@ class ChatService:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
+        await self.audit_service.record(
+            action="chat.completed",
+            resource_type="session",
+            resource_id=state["session_id"],
+            user_id=state["user_id"],
+            payload={
+                "route_type": state.get("route_type"),
+                "cache_hit": state.get("cache_hit", False),
+                "selected_skill": state.get("selected_skill"),
+            },
+        )
+        await self.session.commit()
+
         return ChatResponse(
             session_id=state["session_id"],
             user_id=state["user_id"],
@@ -102,6 +117,20 @@ class ChatService:
                 },
             )
             return
+
+        await self.audit_service.record(
+            action="chat.stream.completed",
+            resource_type="session",
+            resource_id=state["session_id"],
+            user_id=state["user_id"],
+            payload={
+                "route_type": state.get("route_type"),
+                "cache_hit": state.get("cache_hit", False),
+                "selected_skill": state.get("selected_skill"),
+                "chunk_count": len(state.get("stream_chunks", [])),
+            },
+        )
+        await self.session.commit()
 
         for chunk in state.get("stream_chunks", []):
             yield _sse_event(
@@ -189,6 +218,9 @@ class ChatService:
             "session_status": chat_session.status,
             "session_metadata": chat_session.metadata_,
             "requested_route_mode": latest_state.get("route_mode", "auto"),
+            "selected_skill": latest_state.get("selected_skill"),
+            "mcp_tool_name": latest_state.get("mcp_tool_name") or (latest_assistant.metadata_.get("mcp_tool_name") if latest_assistant else None),
+            "available_mcp_tools": latest_state.get("available_mcp_tools", []),
             "checkpoint_id": latest_checkpoint.checkpoint_id if latest_checkpoint else None,
             "checkpoint_created_at": latest_checkpoint.created_at.isoformat() if latest_checkpoint else None,
         }
@@ -204,10 +236,14 @@ class ChatService:
             "user_id": user_id,
             "provider": latest_assistant.metadata_.get("provider") if latest_assistant else latest_state.get("provider_name"),
             "route_type": route_type,
+            "selected_skill": latest_state.get("selected_skill") or (latest_assistant.metadata_.get("selected_skill") if latest_assistant else None),
+            "mcp_tool_name": latest_state.get("mcp_tool_name") or (latest_assistant.metadata_.get("mcp_tool_name") if latest_assistant else None),
             "cache_hit": cache_hit,
             "finish_reason": latest_assistant.metadata_.get("finish_reason") if latest_assistant else latest_state.get("finish_reason"),
             "usage": latest_assistant.token_usage if latest_assistant else latest_state.get("usage", {}),
             "content": latest_assistant.content if latest_assistant else latest_state.get("response_text"),
+            "mcp_arguments": latest_state.get("mcp_arguments", {}),
+            "mcp_tool_result": latest_state.get("mcp_tool_result", {}),
         }
         rendered_payload = {
             "summary": latest_state.get("response_text") or (latest_assistant.content if latest_assistant else ""),
@@ -316,6 +352,16 @@ class ChatService:
                     latency_ms=0,
                 )
             )
+        if route_type == "mcp_call":
+            tool_calls.append(
+                DebugToolCall(
+                    id="tool-mcp-dispatch",
+                    name="mcp.tool.dispatch",
+                    target="mcp-bridge",
+                    status="completed",
+                    latency_ms=0,
+                )
+            )
         return tool_calls
 
     def _build_timeline(
@@ -329,8 +375,12 @@ class ChatService:
         recall_detail = f"召回结果 {len(recall_items)} 条。"
         if route_type == "web_search":
             recall_detail = f"联网搜索结果 {len(recall_items)} 条。"
+        if route_type == "mcp_call":
+            recall_detail = "当前请求通过 MCP bridge 调用了工具能力。"
         if route_type not in {"knowledge_qa", "web_search"}:
             recall_detail = "当前分支未执行外部召回。"
+        if route_type == "mcp_call":
+            recall_detail = "当前请求通过 MCP bridge 调用了工具能力。"
 
         return [
             DebugTimelineItem(

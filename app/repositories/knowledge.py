@@ -17,10 +17,22 @@ class KnowledgeBaseRepository:
     async def get(self, kb_id: str) -> KnowledgeBase | None:
         return await self.session.get(KnowledgeBase, kb_id)
 
+    async def get_accessible(self, kb_id: str, *, user_id: str | None) -> KnowledgeBase | None:
+        kb = await self.get(kb_id)
+        if kb is None:
+            return None
+        if kb.user_id is None:
+            return kb
+        if user_id is None or kb.user_id != user_id:
+            return None
+        return kb
+
     async def list_by_user(self, user_id: str | None, *, limit: int = 50, offset: int = 0) -> Sequence[KnowledgeBase]:
         stmt: Select[tuple[KnowledgeBase]] = select(KnowledgeBase)
         if user_id:
             stmt = stmt.where(KnowledgeBase.user_id == user_id)
+        else:
+            stmt = stmt.where(KnowledgeBase.user_id.is_(None))
         stmt = stmt.order_by(KnowledgeBase.created_at.desc()).offset(offset).limit(limit)
         result = await self.session.scalars(stmt)
         return result.all()
@@ -55,6 +67,18 @@ class DocumentRepository:
 
     async def get(self, doc_id: str) -> Document | None:
         return await self.session.get(Document, doc_id)
+
+    async def get_with_knowledge_base(self, doc_id: str) -> tuple[Document, KnowledgeBase] | None:
+        stmt = (
+            select(Document, KnowledgeBase)
+            .join(KnowledgeBase, KnowledgeBase.id == Document.knowledge_base_id)
+            .where(Document.id == doc_id)
+        )
+        row = await self.session.execute(stmt)
+        result = row.first()
+        if result is None:
+            return None
+        return result[0], result[1]
 
     async def list_by_kb(
         self, kb_id: str, *, limit: int = 50, offset: int = 0

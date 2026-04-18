@@ -13,8 +13,17 @@ class MockLLMProvider(BaseLLMProvider):
     def _resolve_model(self, model: str | None) -> str:
         return model or "mock-echo"
 
-    def _render(self, messages: list[LLMMessage]) -> str:
-        latest = next((message.content for message in reversed(messages) if message.role == "user"), "")
+    def _render(self, messages: list[LLMMessage | dict[str, Any]]) -> str:
+        latest = ""
+        for message in reversed(messages):
+            if isinstance(message, dict):
+                if message.get("role") == "user":
+                    latest = str(message.get("content", ""))
+                    break
+                continue
+            if message.role == "user":
+                latest = message.content
+                break
         return f"[mock] {latest}"
 
     async def chat(

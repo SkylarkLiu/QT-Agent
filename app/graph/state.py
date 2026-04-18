@@ -14,10 +14,18 @@ class GraphState(TypedDict, total=False):
 
     user_message: str
     normalized_query: str
+    rewritten_query: str
     model: str | None
+    route_mode: str
     stream: bool
 
     route_type: str
+    selected_skill: str
+    available_skills: list[dict[str, Any]]
+    mcp_tool_name: str
+    mcp_arguments: dict[str, Any]
+    mcp_tool_result: dict[str, Any]
+    available_mcp_tools: list[dict[str, Any]]
     recall_count: int
     top_k: int
     retrieved_docs: list[dict[str, Any]]

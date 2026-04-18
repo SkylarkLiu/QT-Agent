@@ -187,7 +187,7 @@ class SummaryMemoryService:
             history=history_text,
         )
 
-        provider = LLMProviderFactory.create()
+        provider = LLMProviderFactory.create(model="mock-echo" if self.settings.app.env != "production" else None)
         result = await provider.chat(
             [
                 {"role": "system", "content": "你是一个对话摘要助手，擅长提取关键信息并简洁表达。"},

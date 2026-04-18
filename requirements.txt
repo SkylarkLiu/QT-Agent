@@ -9,3 +9,6 @@ pymilvus==2.6.1
 minio==7.2.18
 httpx==0.28.1
 langgraph==0.6.7
+python-multipart==0.0.20
+pytest==8.4.2
+pytest-asyncio==1.2.0

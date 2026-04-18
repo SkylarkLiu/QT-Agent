@@ -48,7 +48,28 @@ class JsonLogFormatter(logging.Formatter):
             "user_id": user_id_var.get(),
         }
 
-        for field in ("method", "path", "status_code", "duration_ms", "service_name", "service_host", "service_port", "attempt", "app_env", "app_name", "startup_retry_enabled"):
+        for field in (
+            "method",
+            "path",
+            "status_code",
+            "duration_ms",
+            "service_name",
+            "service_host",
+            "service_port",
+            "attempt",
+            "app_env",
+            "app_name",
+            "startup_retry_enabled",
+            "node",
+            "event",
+            "status",
+            "latency_ms",
+            "action",
+            "resource_type",
+            "resource_id",
+            "route_type",
+            "provider",
+        ):
             value = getattr(record, field, None)
             if value is not None:
                 payload[field] = value

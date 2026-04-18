@@ -24,14 +24,21 @@ def get_redis() -> Redis:
 
 
 async def ping_redis() -> None:
-    await get_redis().ping()
+    try:
+        await get_redis().ping()
+    except Exception:
+        logger.warning("redis.unavailable_startup", exc_info=True)
+        raise
     logger.info("redis.connected")
 
 
 async def close_redis() -> None:
     global _redis
     if _redis is not None:
-        await _redis.aclose()
+        try:
+            await _redis.aclose()
+        except Exception:
+            logger.warning("redis.close_failed", exc_info=True)
     _redis = None
 
 
@@ -44,11 +51,18 @@ def build_window_cache_key(session_id: str, *, user_id: str | None = None) -> st
 async def set_json(key: str, value: Any, *, ttl_seconds: int | None = None) -> None:
     settings = get_settings()
     payload = json.dumps(value, ensure_ascii=False)
-    await get_redis().set(key, payload, ex=ttl_seconds or settings.redis.ttl_seconds)
+    try:
+        await get_redis().set(key, payload, ex=ttl_seconds or settings.redis.ttl_seconds)
+    except Exception:
+        logger.warning("redis.set_failed", extra={"key": key[:120]}, exc_info=True)
 
 
 async def get_json(key: str) -> Any | None:
-    payload = await get_redis().get(key)
+    try:
+        payload = await get_redis().get(key)
+    except Exception:
+        logger.warning("redis.get_failed", extra={"key": key[:120]}, exc_info=True)
+        return None
     if payload is None:
         return None
     return json.loads(payload)
@@ -56,10 +70,18 @@ async def get_json(key: str) -> Any | None:
 
 @asynccontextmanager
 async def distributed_lock(name: str, *, timeout: int = 10) -> AsyncIterator[bool]:
-    lock = get_redis().lock(name, timeout=timeout)
-    acquired = await lock.acquire(blocking=False)
+    lock = None
+    try:
+        lock = get_redis().lock(name, timeout=timeout)
+        acquired = await lock.acquire(blocking=False)
+    except Exception:
+        logger.warning("redis.lock_degraded", extra={"lock_name": name, "timeout": timeout}, exc_info=True)
+        acquired = True
     try:
         yield acquired
     finally:
-        if acquired:
-            await lock.release()
+        if acquired and lock is not None:
+            try:
+                await lock.release()
+            except Exception:
+                logger.warning("redis.lock_release_failed", extra={"lock_name": name}, exc_info=True)

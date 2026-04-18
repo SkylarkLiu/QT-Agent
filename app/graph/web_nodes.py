@@ -14,6 +14,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.graph.observability import log_graph_event
 from app.providers.factories import LLMProviderFactory, SearchProviderFactory
 from app.schemas.provider import LLMMessage
 
@@ -91,6 +92,7 @@ async def web_search_execute(state: dict) -> dict:
             "latency_ms": elapsed_ms,
         },
     )
+    log_graph_event("web_search_execute", event="searched", latency_ms=elapsed_ms, provider=provider.provider_name, result_count=len(results))
 
     return {"web_search_results": results}
 
@@ -139,6 +141,7 @@ async def result_clean(state: dict) -> dict:
             "deduplicated_urls": len(seen_urls),
         },
     )
+    log_graph_event("result_clean", event="cleaned", input_count=len(raw_results), output_count=len(cleaned))
 
     return {"web_search_results": cleaned}
 
@@ -183,7 +186,7 @@ async def answer_by_web(state: dict) -> dict:
     messages.extend(history)
     messages.append({"role": "user", "content": context_text + f"\n\n用户问题：{query}"})
 
-    provider = LLMProviderFactory.create()
+    provider = LLMProviderFactory.create(model=state.get("model"))
 
     if state.get("stream"):
         aggregated = ""
@@ -212,6 +215,7 @@ async def answer_by_web(state: dict) -> dict:
                 "chunk_count": len(stream_chunks),
             },
         )
+        log_graph_event("answer_by_web", event="answered", latency_ms=elapsed_ms, provider=provider.provider_name, route_type="web_search")
         return {
             "response_text": aggregated,
             "provider_name": provider.provider_name,
@@ -239,6 +243,7 @@ async def answer_by_web(state: dict) -> dict:
             "model": result.model,
         },
     )
+    log_graph_event("answer_by_web", event="answered", latency_ms=elapsed_ms, provider=result.provider, route_type="web_search")
     return {
         "response_text": final_text,
         "provider_name": result.provider,

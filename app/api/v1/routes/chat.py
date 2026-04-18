@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
-from app.schemas.chat import ChatHistoryQuery, ChatHistoryResponse, ChatRequest, ChatResponse
+from app.schemas.chat import ChatDebugResponse, ChatHistoryQuery, ChatHistoryResponse, ChatRequest, ChatResponse
 from app.services.chat import ChatService
 
 
@@ -24,3 +24,9 @@ async def chat(payload: ChatRequest, session: AsyncSession = Depends(get_db_sess
 async def chat_history(query: ChatHistoryQuery = Depends(), session: AsyncSession = Depends(get_db_session)):
     service = ChatService(session)
     return await service.history(query.session_id, limit=query.limit)
+
+
+@router.get("/chat/debug", summary="Chat debug detail", response_model=ChatDebugResponse)
+async def chat_debug(query: ChatHistoryQuery = Depends(), session: AsyncSession = Depends(get_db_session)):
+    service = ChatService(session)
+    return await service.debug(query.session_id, limit=query.limit)

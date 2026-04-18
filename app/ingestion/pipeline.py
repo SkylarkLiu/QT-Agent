@@ -116,10 +116,13 @@ class IngestionPipeline:
             embedding_provider = EmbeddingProviderFactory.create()
             batch_size = self.settings.ingestion.embedding_batch_size
             all_embeddings: list[list[float]] = []
+            batch_tasks = []
 
             for offset in range(0, len(chunks), batch_size):
                 batch = [c.content for c in chunks[offset : offset + batch_size]]
-                emb_result = await embedding_provider.embed_documents(batch)
+                batch_tasks.append(embedding_provider.embed_documents(batch))
+
+            for emb_result in await asyncio.gather(*batch_tasks):
                 all_embeddings.extend(emb_result.embeddings)
 
             logger.info(
@@ -150,7 +153,7 @@ class IngestionPipeline:
         except Exception as exc:
             logger.exception(
                 "ingestion.pipeline_error",
-                extra={"doc_id": doc_id, "filename": filename},
+                extra={"doc_id": doc_id, "file_name": filename},
             )
             result["parser_status"] = "failed"
             result["error"] = str(exc)

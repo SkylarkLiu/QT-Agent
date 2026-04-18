@@ -4,6 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from typing import Literal, TypedDict
 
 class LLMMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"] = "user"
@@ -11,6 +12,11 @@ class LLMMessage(BaseModel):
     name: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+class MessageDict(TypedDict):
+
+    role: Literal["system", "user", "assistant", "tool"]
+
+    content: str
 
 class LLMResponse(BaseModel):
     content: str

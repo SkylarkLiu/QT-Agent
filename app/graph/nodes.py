@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache.redis_client import get_json, set_json
 from app.memory.history_loader import HistoryEntry, get_history_loader
+from app.graph.observability import log_graph_event
+from app.mcp.tool_adapter import MCPToolAdapter
 from app.providers.factories import LLMProviderFactory
 from app.repositories.chat import GraphCheckpointRepository, MessageRepository
 from app.schemas.provider import LLMMessage
@@ -14,6 +16,7 @@ from app.schemas.provider import LLMMessage
 
 async def init_request(state: dict) -> dict:
     message = state["user_message"]
+    log_graph_event("init_request", event="start", status="running", query_length=len(message))
     return {
         "normalized_query": " ".join(message.split()),
         "trace_id": state.get("trace_id") or str(uuid4()),
@@ -30,6 +33,12 @@ async def init_request(state: dict) -> dict:
         "graph_run_id": str(uuid4()),
         "web_search_results": [],
         "web_search_query": "",
+        "selected_skill": state.get("selected_skill", ""),
+        "available_skills": state.get("available_skills", []),
+        "mcp_tool_name": state.get("mcp_tool_name", ""),
+        "mcp_arguments": state.get("mcp_arguments", {}),
+        "mcp_tool_result": state.get("mcp_tool_result", {}),
+        "available_mcp_tools": state.get("available_mcp_tools", []),
     }
 
 
@@ -67,6 +76,7 @@ async def check_window_cache(state: dict) -> dict:
     # 1. 精确匹配
     exact_hit = await cache_service.check_exact_hit(session_id, normalized_query, user_id=user_id)
     if exact_hit:
+        log_graph_event("check_window_cache", event="exact_hit", route_type=exact_hit.route_type, provider=exact_hit.provider)
         return {
             "cache_hit": True,
             "cache_context": {
@@ -85,6 +95,7 @@ async def check_window_cache(state: dict) -> dict:
     # 2. 语义相似匹配
     sim_hit = await cache_service.check_similarity_hit(session_id, normalized_query, user_id=user_id)
     if sim_hit:
+        log_graph_event("check_window_cache", event="similarity_hit", route_type=sim_hit.route_type, provider=sim_hit.provider)
         return {
             "cache_hit": True,
             "cache_context": {
@@ -100,6 +111,7 @@ async def check_window_cache(state: dict) -> dict:
             "usage": sim_hit.usage,
         }
 
+    log_graph_event("check_window_cache", event="miss")
     return {"cache_hit": False, "cache_context": {}}
 
 
@@ -107,32 +119,71 @@ async def supervisor_route(state: dict) -> dict:
     if state.get("cache_hit"):
         return {}
 
+    from app.skills.registry import register_default_skills
+
+    registry = register_default_skills()
+    route_mode = state.get("route_mode", "auto")
+    if route_mode == "knowledge":
+        log_graph_event("supervisor_route", event="route_selected", route_type="skill", selected_skill="knowledge_qa")
+        return {"route_type": "skill", "selected_skill": "knowledge_qa", "need_web_fallback": False}
+    if route_mode == "websearch":
+        log_graph_event("supervisor_route", event="route_selected", route_type="skill", selected_skill="web_search")
+        return {"route_type": "skill", "selected_skill": "web_search", "need_web_fallback": True}
+    if route_mode == "tool":
+        log_graph_event("supervisor_route", event="route_selected", route_type="mcp_call", selected_skill="mcp_tool")
+        return {"route_type": "mcp_call", "selected_skill": "mcp_tool", "need_web_fallback": False}
+
+    matched_skill = await registry.match(state)
+    if matched_skill is not None:
+        log_graph_event("supervisor_route", event="skill_matched", route_type="skill", selected_skill=matched_skill.name)
+        return {
+            "route_type": "skill",
+            "selected_skill": matched_skill.name,
+            "need_web_fallback": matched_skill.name == "web_search",
+        }
+
     query = state["normalized_query"].lower()
     route_type = "smalltalk"
     need_web_fallback = False
-    if any(token in query for token in ("http", "网址", "新闻", "今天", "搜索", "web")):
-        route_type = "web_search"
-        need_web_fallback = True
-    elif any(token in query for token in ("知识库", "文档", "kb", "rag", "资料")):
-        route_type = "knowledge_qa"
+    if any(token in query for token in ("工具", "tool", "mcp")):
+        route_type = "mcp_call"
+    elif any(token in query for token in ("关键词", "求和", "sum", "session context", "会话上下文")):
+        route_type = "mcp_call"
 
+    log_graph_event("supervisor_route", event="route_selected", route_type=route_type)
     return {"route_type": route_type, "need_web_fallback": need_web_fallback}
 
 
 def _system_prompt(route_type: str, need_web_fallback: bool) -> str:
+    if route_type == "skill":
+        return "你是一个技能编排助手。当前请求会交给合适的 skill 执行，请保持回答清晰并暴露必要的调试上下文。"
     if route_type == "knowledge_qa":
         return "你是知识库问答助手。当前知识检索能力尚在建设中，请基于已有上下文给出谨慎、清晰的回答，并明确缺失信息。"
     if route_type == "web_search":
         fallback = "当前未接入实时联网搜索，请明确说明这是离线回答。" if need_web_fallback else ""
         return f"你是网页检索助手。{fallback}".strip()
+    if route_type == "tool":
+        return "你是工具调试助手。当前请优先解释工具调用意图、输入输出和可能的联调限制。"
+    if route_type == "mcp_call":
+        return "你是 MCP 工具桥接助手。请基于工具调用结果给出清晰、可调试的输出。"
     return "你是一个友好、简洁的智能助手。"
+
+
+async def execute_mcp_tool(state: dict) -> dict:
+    if state.get("cache_hit"):
+        return {"stream_chunks": []}
+
+    adapter = MCPToolAdapter()
+    result = await adapter.execute(state)
+    log_graph_event("mcp_call", event="tool_completed", route_type="mcp_call", provider=result.get("provider_name"), tool_name=result.get("mcp_tool_name"))
+    return result
 
 
 async def generate_response(state: dict) -> dict:
     if state.get("cache_hit"):
         return {"stream_chunks": []}
 
-    provider = LLMProviderFactory.create()
+    provider = LLMProviderFactory.create(model=state.get("model"))
     llm_messages = [*state.get("history_messages", [])]
     llm_messages.insert(0, LLMMessage(role="system", content=_system_prompt(state["route_type"], state["need_web_fallback"])))
     llm_messages.append(LLMMessage(role="user", content=state["user_message"]))
@@ -155,6 +206,7 @@ async def generate_response(state: dict) -> dict:
         }
 
     result = await provider.chat(llm_messages, model=state.get("model"))
+    log_graph_event("generate_response", event="llm_completed", route_type=state.get("route_type"), provider=result.provider)
     return {
         "response_text": result.content,
         "provider_name": result.provider,
@@ -166,7 +218,14 @@ async def generate_response(state: dict) -> dict:
 
 async def post_process(state: dict) -> dict:
     response_text = state.get("response_text", "").strip()
+    log_graph_event("post_process", event="response_ready", route_type=state.get("route_type"), response_length=len(response_text))
     return {"response_text": response_text or "抱歉，我暂时无法生成有效回复。"}
+
+
+def route_after_skill_router(state: dict) -> str:
+    if state.get("need_web_fallback") and state.get("route_type") != "web_search":
+        return "skill_router"
+    return "post_process"
 
 
 def persist_state_factory(
@@ -194,6 +253,8 @@ def persist_state_factory(
                 "provider": state.get("provider_name"),
                 "finish_reason": state.get("finish_reason"),
                 "route_type": state.get("route_type"),
+                "selected_skill": state.get("selected_skill"),
+                "mcp_tool_name": state.get("mcp_tool_name"),
                 "cache_hit": state.get("cache_hit", False),
             },
         )
@@ -245,11 +306,17 @@ def persist_state_factory(
             "user_id": state.get("user_id"),
             "username": state.get("username"),
             "normalized_query": state.get("normalized_query"),
+            "route_mode": state.get("route_mode"),
             "route_type": state.get("route_type"),
+            "selected_skill": state.get("selected_skill"),
+            "available_mcp_tools": state.get("available_mcp_tools") or [],
+            "mcp_tool_name": state.get("mcp_tool_name"),
             "cache_hit": state.get("cache_hit"),
             "need_web_fallback": state.get("need_web_fallback"),
             "response_text": state.get("response_text"),
             "usage": state.get("usage") or {},
+            "mcp_arguments": state.get("mcp_arguments") or {},
+            "mcp_tool_result": state.get("mcp_tool_result") or {},
             "timestamp": datetime.now(UTC).isoformat(),
         }
         await checkpoint_repo.create(
@@ -258,7 +325,12 @@ def persist_state_factory(
             checkpoint_id=state["graph_run_id"],
             parent_checkpoint_id=None,
             state=checkpoint_state,
-            metadata={"route_type": state.get("route_type"), "cache_hit": state.get("cache_hit", False)},
+            metadata={
+                "route_type": state.get("route_type"),
+                "selected_skill": state.get("selected_skill"),
+                "mcp_tool_name": state.get("mcp_tool_name"),
+                "cache_hit": state.get("cache_hit", False),
+            },
         )
         await session.commit()
         return {}
@@ -324,7 +396,7 @@ async def load_session_context_with_self_session(state: dict) -> dict:
                 await session.flush()
 
         # 4. 加载三层记忆
-        memory = summary_service.load_memory(all_messages, summary=existing_summary)
+        memory = await summary_service.load_memory(all_messages, summary=existing_summary)
 
         # 5. 构建完整的 llm_messages
         llm_messages: list[LLMMessage] = []
@@ -389,6 +461,8 @@ async def persist_state_with_self_session(state: dict) -> dict:
                 "provider": state.get("provider_name"),
                 "finish_reason": state.get("finish_reason"),
                 "route_type": state.get("route_type"),
+                "selected_skill": state.get("selected_skill"),
+                "mcp_tool_name": state.get("mcp_tool_name"),
                 "cache_hit": state.get("cache_hit", False),
             },
         )
@@ -441,11 +515,17 @@ async def persist_state_with_self_session(state: dict) -> dict:
             "user_id": state.get("user_id"),
             "username": state.get("username"),
             "normalized_query": state.get("normalized_query"),
+            "route_mode": state.get("route_mode"),
             "route_type": state.get("route_type"),
+            "selected_skill": state.get("selected_skill"),
+            "available_mcp_tools": state.get("available_mcp_tools") or [],
+            "mcp_tool_name": state.get("mcp_tool_name"),
             "cache_hit": state.get("cache_hit"),
             "need_web_fallback": state.get("need_web_fallback"),
             "response_text": state.get("response_text"),
             "usage": state.get("usage") or {},
+            "mcp_arguments": state.get("mcp_arguments") or {},
+            "mcp_tool_result": state.get("mcp_tool_result") or {},
             "timestamp": datetime.now(UTC).isoformat(),
         }
         await checkpoint_repo.create(
@@ -454,7 +534,12 @@ async def persist_state_with_self_session(state: dict) -> dict:
             checkpoint_id=state["graph_run_id"],
             parent_checkpoint_id=None,
             state=checkpoint_state,
-            metadata={"route_type": state.get("route_type"), "cache_hit": state.get("cache_hit", False)},
+            metadata={
+                "route_type": state.get("route_type"),
+                "selected_skill": state.get("selected_skill"),
+                "mcp_tool_name": state.get("mcp_tool_name"),
+                "cache_hit": state.get("cache_hit", False),
+            },
         )
         await session.commit()
         return {}
